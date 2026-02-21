@@ -2,23 +2,14 @@ import os
 import logging
 import json
 import sqlite3
-import random
-import string
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    InlineQuery, 
-    InlineQueryResultArticle, 
-    InlineQueryResultPhoto,
-    InlineQueryResultVideo,
-    InputTextMessageContent
-)
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.types import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.enums import ParseMode
 
 # Настройка логирования
@@ -40,9 +31,8 @@ def init_db():
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS templates
-                 (id TEXT PRIMARY KEY,
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
-                  title TEXT,
                   content TEXT,
                   buttons TEXT,
                   media_type TEXT,
@@ -59,23 +49,6 @@ def init_db():
 
 init_db()
 
-# ==================== АВТОУДАЛЕНИЕ СТАРЫХ ПОСТОВ ====================
-
-def cleanup_old_templates():
-    """Удаляет посты старше 30 дней"""
-    conn = sqlite3.connect('templates.db')
-    c = conn.cursor()
-    month_ago = datetime.now() - timedelta(days=30)
-    c.execute('DELETE FROM templates WHERE created_at < ?', (month_ago,))
-    deleted = c.rowcount
-    conn.commit()
-    conn.close()
-    if deleted > 0:
-        logger.info(f"🧹 Удалено {deleted} старых постов")
-
-# Вызываем при каждом запуске
-cleanup_old_templates()
-
 # ==================== FSM СОСТОЯНИЯ ====================
 
 class PostForm(StatesGroup):
@@ -84,51 +57,18 @@ class PostForm(StatesGroup):
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ====================
 
-def generate_key() -> str:
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choices(chars, k=8))
-
-def save_template(user_id: int, title: str, content: str, buttons: list, media_type: str = None, media_id: str = None) -> str:
-    key = generate_key()
+def save_template(user_id: int, content: str, buttons: list, media_type: str = None, media_id: str = None):
+    """Сохраняет пост в базу"""
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
-    c.execute('''INSERT INTO templates (id, user_id, title, content, buttons, media_type, media_id, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-              (key, user_id, title, content, json.dumps(buttons), media_type, media_id, datetime.now()))
+    c.execute('''INSERT INTO templates (user_id, content, buttons, media_type, media_id, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)''',
+              (user_id, content, json.dumps(buttons), media_type, media_id, datetime.now()))
     conn.commit()
     conn.close()
-    return key
-
-def get_template(key: str) -> dict | None:
-    conn = sqlite3.connect('templates.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM templates WHERE id = ?', (key,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {
-            'id': row[0],
-            'user_id': row[1],
-            'title': row[2],
-            'content': row[3],
-            'buttons': json.loads(row[4]) if row[4] else [],
-            'media_type': row[5],
-            'media_id': row[6],
-            'created_at': row[7]
-        }
-    return None
-
-def get_user_templates(user_id: int) -> list:
-    """Возвращает посты пользователя с сортировкой по дате (сначала новые)"""
-    conn = sqlite3.connect('templates.db')
-    c = conn.cursor()
-    c.execute('''SELECT id, title, created_at FROM templates 
-                 WHERE user_id = ? ORDER BY created_at DESC''', (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    return [{'id': r[0], 'title': r[1], 'created_at': r[2]} for r in rows]
 
 def save_button(user_id: int, text: str, url: str):
+    """Сохраняет кнопку в базу часто используемых"""
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
     c.execute('''INSERT INTO saved_buttons (user_id, button_text, button_url, created_at)
@@ -137,6 +77,7 @@ def save_button(user_id: int, text: str, url: str):
     conn.close()
 
 def get_saved_buttons(user_id: int) -> list:
+    """Возвращает последние 10 сохраненных кнопок"""
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
     c.execute('''SELECT button_text, button_url FROM saved_buttons 
@@ -150,10 +91,9 @@ def get_saved_buttons(user_id: int) -> list:
 def main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="➕ Новый пост")
-    builder.button(text="📋 Мои посты")
     builder.button(text="📚 Мои кнопки")
     builder.button(text="❓ Помощь")
-    builder.adjust(2, 2)
+    builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True, input_field_placeholder="Выбери действие...")
 
 def cancel_keyboard():
@@ -176,8 +116,7 @@ async def cmd_start(message: types.Message):
     await message.answer(
         "🤖 **Генератор постов**\n\n"
         "🔹 **➕ Новый пост** — создать пост с кнопками\n"
-        "🔹 **📋 Мои посты** — список сохраненных (с датой)\n"
-        "🔹 **📚 Мои кнопки** — часто используемые\n"
+        "🔹 **📚 Мои кнопки** — часто используемые кнопки\n"
         "🔹 **❓ Помощь** — подсказки",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
@@ -198,113 +137,6 @@ async def cmd_new(message: types.Message, state: FSMContext):
         reply_markup=cancel_keyboard()
     )
 
-@dp.message(F.text == "📋 Мои посты")
-async def cmd_list(message: types.Message):
-    templates = get_user_templates(message.from_user.id)
-    if not templates:
-        await message.answer(
-            "📭 У тебя пока нет сохраненных постов.\n"
-            "Нажми **➕ Новый пост** чтобы создать первый!",
-            reply_markup=main_keyboard()
-        )
-        return
-    
-    # Создаем inline-клавиатуру со ссылками на посты
-    builder = InlineKeyboardBuilder()
-    for t in templates:
-        # Форматируем дату
-        created = datetime.fromisoformat(t['created_at'])
-        date_str = created.strftime("%d.%m.%Y %H:%M")
-        
-        # Добавляем кнопку с названием поста
-        builder.button(
-            text=f"📄 {t['title']} — {date_str}",
-            callback_data=f"show_post:{t['id']}"
-        )
-    builder.adjust(1)
-    
-    await message.answer(
-        "**📋 Твои посты (нажми на пост чтобы посмотреть):**",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=builder.as_markup()
-    )
-
-@dp.callback_query(lambda c: c.data.startswith('show_post:'))
-async def show_post_callback(callback: types.CallbackQuery):
-    """Показывает пост по запросу из списка"""
-    key = callback.data.split(':')[1]
-    template = get_template(key)
-    
-    if not template:
-        await callback.message.answer("❌ Пост не найден")
-        await callback.answer()
-        return
-    
-    # Создаем клавиатуру из кнопок
-    kb = None
-    if template['buttons']:
-        builder = InlineKeyboardBuilder()
-        for row in template['buttons']:
-            for btn in row:
-                builder.button(text=btn['text'], url=btn['url'])
-        builder.adjust(1)
-        kb = builder.as_markup()
-    
-    # Отправляем пост
-    if template['media_type'] == 'photo' and template['media_id']:
-        await callback.message.answer_photo(
-            photo=template['media_id'],
-            caption=template['content'] if template['content'] else None,
-            reply_markup=kb,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif template['media_type'] == 'video' and template['media_id']:
-        await callback.message.answer_video(
-            video=template['media_id'],
-            caption=template['content'] if template['content'] else None,
-            reply_markup=kb,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        if template['content']:
-            await callback.message.answer(
-                template['content'],
-                reply_markup=kb,
-                parse_mode=ParseMode.MARKDOWN
-            )
-        elif kb:
-            await callback.message.answer(" ", reply_markup=kb)
-    
-    # Добавляем кнопку с ключом
-    key_kb = InlineKeyboardBuilder()
-    key_kb.button(
-        text=f"🔑 Скопировать ключ: {key}",
-        callback_data=f"copy_key:{key}"
-    )
-    await callback.message.answer(
-        f"**Ключ для публикации:**\n`{key}`\n\n"
-        f"Или используй готовую команду:\n`@{callback.message.bot.username} {key}`",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=key_kb.as_markup()
-    )
-    
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith('copy_key:'))
-async def copy_key_callback(callback: types.CallbackQuery):
-    """Показывает готовую команду для копирования"""
-    key = callback.data.split(':')[1]
-    bot_username = callback.message.bot.username
-    
-    # Отправляем сообщение с готовой командой
-    await callback.message.answer(
-        f"✅ **Готовая команда для публикации:**\n\n"
-        f"`@{bot_username} {key}`\n\n"
-        f"Просто скопируй это сообщение целиком и вставь в группу!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await callback.answer()
-
 @dp.message(F.text == "📚 Мои кнопки")
 async def cmd_my_buttons(message: types.Message):
     buttons = get_saved_buttons(message.from_user.id)
@@ -323,6 +155,7 @@ async def cmd_my_buttons(message: types.Message):
     await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
 
 @dp.message(F.text == "❓ Помощь")
+@dp.message(Command('help'))
 async def cmd_help(message: types.Message):
     await message.answer(
         "**📖 Помощь**\n\n"
@@ -333,11 +166,7 @@ async def cmd_help(message: types.Message):
         "4. Введи кнопки в формате:\n"
         "   `Текст - ссылка`\n"
         "   или `Кнопка1 - url1 | Кнопка2 - url2`\n"
-        "5. Нажми **✅ Готово** — пост сохранится\n\n"
-        "**Как опубликовать:**\n"
-        "После создания ты получишь готовую команду:\n"
-        "`@твой_бот КЛЮЧ`\n"
-        "Просто скопируй и вставь в группу!",
+        "5. Нажми **✅ Готово** — пост сохранится",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -511,24 +340,14 @@ async def finish_post(message: types.Message, state: FSMContext):
     media_id = data.get('media_id')
     buttons = data.get('buttons', [])
     
-    # Создаем заголовок для списка
-    if content_text:
-        title = (content_text[:30] + '...') if len(content_text) > 30 else content_text
-    else:
-        title = f"{media_type} пост" if media_type else "Пост без текста"
-    
     # Сохраняем в базу
-    key = save_template(
+    save_template(
         user_id=message.from_user.id,
-        title=title,
         content=content_text,
         buttons=buttons,
         media_type=media_type,
         media_id=media_id
     )
-    
-    # Очищаем состояние (блокируем редактирование)
-    await state.clear()
     
     # Очищаем состояние (блокируем редактирование)
     await state.clear()
@@ -563,236 +382,19 @@ async def finish_post(message: types.Message, state: FSMContext):
         elif buttons:
             await message.answer(" ", reply_markup=kb)
     
-    # Получаем username бота
-    bot_username = (await message.bot.me()).username
-    
-    # Отправляем ГОТОВУЮ КОМАНДУ для копирования
-    await message.answer(
-        f"✅ **Пост готов к публикации!**\n\n"
-        f"**Готовая команда (просто скопируй целиком):**\n\n"
-        f"`@{bot_username} {key}`\n\n"
-        f"📋 **Как использовать:**\n"
-        f"1️⃣ Скопируй команду выше\n"
-        f"2️⃣ Вставь в нужную группу\n"
-        f"3️⃣ Нажми на появившееся превью",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
     # Возвращаем главное меню
     await message.answer(
-        "Выбери следующее действие:",
+        "✅ **Пост готов!**\n\n"
+        "Теперь ты можешь переслать его в группу "
+        "с опцией **«Скрыть отправителя»**",
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
-
-# ==================== INLINE РЕЖИМ С ПОДДЕРЖКОЙ ФОТО И ВИДЕО ====================
-
-@dp.inline_query()
-async def inline_query_handler(query: InlineQuery):
-    """Обрабатывает inline-запросы @бот КЛЮЧ"""
-    key = query.query.strip()
-    user_id = query.from_user.id
-    
-    logger.info(f"🔍 Inline запрос от пользователя {user_id}: ключ='{key}'")
-    
-    if not key:
-        # Пустой запрос — показываем последние посты
-        templates = get_user_templates(user_id)
-        results = []
-        
-        if templates:
-            for t in templates[:10]:
-                created = datetime.fromisoformat(t['created_at'])
-                date_str = created.strftime("%d.%m.%Y %H:%M")
-                results.append(
-                    InlineQueryResultArticle(
-                        id=t['id'],
-                        title=f'📄 {t["title"]}',
-                        description=f'Создан: {date_str} | Ключ: {t["id"]}',
-                        input_message_content=InputTextMessageContent(
-                            message_text=f'Пост с ключом {t["id"]}',
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    )
-                )
-        else:
-            results.append(
-                InlineQueryResultArticle(
-                    id='help',
-                    title='📝 Нет сохраненных постов',
-                    description='Создай новый пост через /new',
-                    input_message_content=InputTextMessageContent(
-                        message_text='Создай новый пост через /new'
-                    )
-                )
-            )
-        
-        await query.answer(results, cache_time=1)
-        logger.info(f"✅ Отправлено {len(results)} результатов (пустой запрос)")
-        return
-    
-    # Ищем шаблон по ключу
-    logger.info(f"🔎 Поиск шаблона с ключом '{key}'")
-    template = get_template(key)
-    
-    if not template:
-        logger.warning(f"❌ Шаблон с ключом '{key}' не найден")
-        results = [InlineQueryResultArticle(
-            id='not_found',
-            title='❌ Пост не найден',
-            description=f'Ключ "{key}" не существует',
-            input_message_content=InputTextMessageContent(
-                message_text=f'❌ Пост с ключом "{key}" не найден.'
-            )
-        )]
-        await query.answer(results, cache_time=1)
-        return
-    
-    logger.info(f"✅ Шаблон найден: {template['title']}, медиа: {template['media_type']}")
-    
-    # Создаем клавиатуру для кнопок
-    reply_markup = None
-    if template['buttons']:
-        logger.info(f"🔘 Найдено {len(template['buttons'])} рядов кнопок")
-        builder = InlineKeyboardBuilder()
-        for row in template['buttons']:
-            for btn in row:
-                builder.button(text=btn['text'], url=btn['url'])
-        builder.adjust(1)
-        reply_markup = builder.as_markup()
-    
-    created = datetime.fromisoformat(template['created_at'])
-    date_str = created.strftime("%d.%m.%Y %H:%M")
-    
-    # Получаем URL для медиа через Telegram API
-    async def get_file_url(file_id: str) -> str:
-        try:
-            file = await bot.get_file(file_id)
-            url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-            logger.info(f"📎 Получен URL для file_id {file_id}")
-            return url
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения URL: {e}")
-            return None
-    
-    # Определяем тип контента и создаем соответствующий результат
-    try:
-        if template['media_type'] == 'photo' and template['media_id']:
-            # Для фото используем InlineQueryResultPhoto
-            photo_url = await get_file_url(template['media_id'])
-            
-            if photo_url:
-                results = [InlineQueryResultPhoto(
-                    id=key,
-                    photo_url=photo_url,
-                    thumbnail_url=photo_url,
-                    caption=template['content'] or None,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup,
-                    title=f'📸 {template["title"]}',
-                    description=f'Фото • {date_str}'
-                )]
-                logger.info(f"🖼️ Создан результат для фото")
-            else:
-                # Если не удалось получить URL, показываем текст
-                results = [InlineQueryResultArticle(
-                    id=key,
-                    title=f'📄 {template["title"]} (фото недоступно)',
-                    description=f'Текст • {date_str}',
-                    input_message_content=InputTextMessageContent(
-                        message_text=template['content'] or " ",
-                        parse_mode=ParseMode.MARKDOWN
-                    ),
-                    reply_markup=reply_markup
-                )]
-            
-        elif template['media_type'] == 'video' and template['media_id']:
-            # Для видео используем InlineQueryResultVideo
-            video_url = await get_file_url(template['media_id'])
-            
-            if video_url:
-                # Для превью используем заглушку
-                results = [InlineQueryResultVideo(
-                    id=key,
-                    video_url=video_url,
-                    mime_type="video/mp4",
-                    thumbnail_url="https://via.placeholder.com/320x180.png?text=Video",
-                    caption=template['content'] or None,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup,
-                    title=f'🎬 {template["title"]}',
-                    description=f'Видео • {date_str}'
-                )]
-                logger.info(f"🎬 Создан результат для видео")
-            else:
-                results = [InlineQueryResultArticle(
-                    id=key,
-                    title=f'📄 {template["title"]} (видео недоступно)',
-                    description=f'Текст • {date_str}',
-                    input_message_content=InputTextMessageContent(
-                        message_text=template['content'] or " ",
-                        parse_mode=ParseMode.MARKDOWN
-                    ),
-                    reply_markup=reply_markup
-                )]
-            
-        else:
-            # Для текста используем InlineQueryResultArticle
-            results = [InlineQueryResultArticle(
-                id=key,
-                title=f'📄 {template["title"]}',
-                description=f'Текст • {date_str}',
-                input_message_content=InputTextMessageContent(
-                    message_text=template['content'] or " ",
-                    parse_mode=ParseMode.MARKDOWN
-                ),
-                reply_markup=reply_markup
-            )]
-            logger.info(f"📄 Создан результат для текста")
-        
-        await query.answer(results, cache_time=1)
-        logger.info(f"✅ Успешно отправлен результат для ключа '{key}'")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при создании inline-результата: {e}", exc_info=True)
-        # В случае ошибки отправляем просто текст
-        results = [InlineQueryResultArticle(
-            id=key,
-            title=f'⚠️ Ошибка загрузки',
-            description=str(e)[:50],
-            input_message_content=InputTextMessageContent(
-                message_text=template['content'] or "Ошибка загрузки медиа",
-                parse_mode=ParseMode.MARKDOWN
-            ),
-            reply_markup=reply_markup
-        )]
-        await query.answer(results, cache_time=1)
-
-# ==================== УДАЛЕНИЕ ПОСТОВ ====================
-
-@dp.message(Command('delete'))
-async def cmd_delete(message: types.Message):
-    parts = message.text.split()
-    if len(parts) != 2:
-        await message.answer("❌ Укажи ключ: `/delete ABC123`", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    key = parts[1]
-    conn = sqlite3.connect('templates.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM templates WHERE id = ? AND user_id = ?', (key, message.from_user.id))
-    deleted = c.rowcount > 0
-    conn.commit()
-    conn.close()
-    
-    if deleted:
-        await message.answer(f"✅ Пост `{key}` удален.", parse_mode=ParseMode.MARKDOWN)
-    else:
-        await message.answer(f"❌ Пост `{key}` не найден.", parse_mode=ParseMode.MARKDOWN)
 
 # ==================== ЗАПУСК ====================
 
 async def main():
-    logger.info("🚀 Бот-генератор с поддержкой фото/видео запускается...")
+    logger.info("🚀 Бот-генератор запускается...")
     await bot.delete_webhook()
     await dp.start_polling(bot)
 
