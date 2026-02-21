@@ -14,6 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.enums import ParseMode
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Токен бота из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+if not BOT_TOKEN:
+    raise ValueError("Нет токена! Добавь BOT_TOKEN в переменные окружения")
+
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -102,7 +106,7 @@ def main_keyboard():
     builder.button(text="📋 Мои посты")
     builder.button(text="❓ Помощь")
     builder.adjust(2, 1)
-    return builder.as_markup(resize_keyboard=True)
+    return builder.as_markup(resize_keyboard=True, input_field_placeholder="Выбери действие...")
 
 def cancel_keyboard():
     """Клавиатура с кнопкой отмены"""
@@ -117,10 +121,10 @@ async def cmd_start(message: types.Message):
         "🤖 **Генератор постов**\n\n"
         "Я помогаю создавать красивые посты с кнопками!\n\n"
         "**Что умею:**\n"
-        "• Текст с форматированием\n"
-        "• Эмодзи и смайлики\n"
-        "• Кнопки-ссылки\n"
-        "• Фото и видео\n\n"
+        "• Текст с форматированием (**жирный**, *курсив*)\n"
+        "• Эмодзи и смайлики 😊\n"
+        "• Кнопки-ссылки 🔘\n"
+        "• Фото и видео 📸\n\n"
         "Нажми **➕ Новый пост** чтобы начать",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
@@ -182,7 +186,11 @@ async def cmd_help(message: types.Message):
         "**Как опубликовать:**\n"
         "В группе введи: `@твой_бот КЛЮЧ`\n\n"
         "**Как удалить пост:**\n"
-        "Введи команду: `/delete КЛЮЧ`",
+        "Введи команду: `/delete КЛЮЧ`\n\n"
+        "**Команды:**\n"
+        "/new — новый пост\n"
+        "/list — мои посты\n"
+        "/delete КЛЮЧ — удалить пост",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -196,15 +204,15 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
         reply_markup=main_keyboard()
     )
 
-@dp.message(PostForm.waiting_for_content, F.content_type.in_({'text', 'photo', 'video'}))
+@dp.message(PostForm.waiting_for_content)
 async def handle_post_content(message: types.Message, state: FSMContext):
     """Обрабатывает полученный контент поста"""
     
+    # Проверяем тип контента
     content_data = {
         'text': message.html_text or message.caption or '',
         'media_type': None,
-        'media_id': None,
-        'message': message
+        'media_id': None
     }
     
     # Определяем тип медиа
@@ -216,8 +224,11 @@ async def handle_post_content(message: types.Message, state: FSMContext):
         content_data['media_type'] = 'video'
         content_data['media_id'] = message.video.file_id
         await message.answer("🎬 Видео получено. Теперь добавь кнопки (или отправь /skip если не нужны)")
-    else:
+    elif message.text:
         await message.answer("✍️ Текст получен. Теперь добавь кнопки (или отправь /skip если не нужны)")
+    else:
+        await message.answer("❌ Неподдерживаемый тип. Отправь текст, фото или видео.")
+        return
     
     # Сохраняем данные в состоянии
     await state.update_data(content_data)
@@ -229,7 +240,7 @@ async def handle_buttons(message: types.Message, state: FSMContext):
     
     text = message.text
     
-    if text == '/skip' or text == '❌ Пропустить':
+    if text == '/skip' or text == '❌ Отмена':
         buttons = []
         await finish_post(message, state, buttons)
         return
@@ -252,7 +263,7 @@ async def handle_buttons(message: types.Message, state: FSMContext):
         await message.answer(
             "❌ Не удалось распознать кнопки. Используй формат:\n"
             "`[Текст кнопки | https://ссылка.ru]`\n\n"
-            "Или отправь /skip чтобы пропустить",
+            "Или отправь ❌ Отмена чтобы пропустить",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -265,7 +276,10 @@ async def finish_post(message: types.Message, state: FSMContext, buttons: list):
     media_id = data.get('media_id')
     
     # Создаем заголовок для списка
-    title = (content_text[:30] + '...') if len(content_text) > 30 else (content_text or 'Пост без текста')
+    if content_text:
+        title = (content_text[:30] + '...') if len(content_text) > 30 else content_text
+    else:
+        title = f"{media_type} пост" if media_type else "Пост без текста"
     
     # Сохраняем в базу
     key = save_template(
@@ -287,7 +301,7 @@ async def finish_post(message: types.Message, state: FSMContext, buttons: list):
         builder.adjust(1)
         kb = builder.as_markup()
     
-    preview_text = f"**Предпросмотр поста:**\n\n{content_text}"
+    preview_text = f"**Предпросмотр поста:**\n\n{content_text}" if content_text else "**Предпросмотр поста:**"
     
     if media_type == 'photo' and media_id:
         await message.answer_photo(photo=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
@@ -315,7 +329,8 @@ async def cmd_delete(message: types.Message):
     if len(parts) != 2:
         await message.answer(
             "❌ Укажи ключ: `/delete ABC123`",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_keyboard()
         )
         return
     
@@ -329,9 +344,9 @@ async def cmd_delete(message: types.Message):
     conn.close()
     
     if deleted:
-        await message.answer(f"✅ Пост `{key}` удален.", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"✅ Пост `{key}` удален.", parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
     else:
-        await message.answer(f"❌ Пост `{key}` не найден.", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"❌ Пост `{key}` не найден.", parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
 
 @dp.inline_query()
 async def inline_query_handler(query: InlineQuery):
@@ -345,7 +360,7 @@ async def inline_query_handler(query: InlineQuery):
         results = []
         
         if templates:
-            for t in templates[:5]:  # Показываем до 5 последних
+            for t in templates[:10]:  # Показываем до 10 последних
                 results.append(
                     InlineQueryResultArticle(
                         id=t['id'],
@@ -401,23 +416,10 @@ async def inline_query_handler(query: InlineQuery):
         reply_markup = builder.as_markup()
     
     # Создаем контент сообщения
-    if template['media_type'] == 'photo' and template['media_id']:
-        input_content = InputTextMessageContent(
-            message_text=template['content'],
-            parse_mode=ParseMode.MARKDOWN
-        )
-        # В реальном проекте здесь нужно использовать InputMediaPhoto
-        # Но для простоты пока оставляем текст
-    elif template['media_type'] == 'video' and template['media_id']:
-        input_content = InputTextMessageContent(
-            message_text=template['content'],
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        input_content = InputTextMessageContent(
-            message_text=template['content'],
-            parse_mode=ParseMode.MARKDOWN
-        )
+    input_content = InputTextMessageContent(
+        message_text=template['content'] or "Пост без текста",
+        parse_mode=ParseMode.MARKDOWN
+    )
     
     results = [
         InlineQueryResultArticle(
