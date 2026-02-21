@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder  # ✅ ПРАВИЛЬНЫЙ ИМПОРТ
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.enums import ParseMode
 
 # Настройка логирования
@@ -53,20 +53,47 @@ def save_button(user_id: int, text: str, url: str):
     conn.close()
 
 def get_saved_buttons(user_id: int) -> list:
-    """Возвращает последние 10 сохраненных кнопок"""
+    """Возвращает все сохраненные кнопки пользователя"""
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
-    c.execute('''SELECT button_text, button_url FROM saved_buttons 
-                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 10''', (user_id,))
+    c.execute('''SELECT id, button_text, button_url FROM saved_buttons 
+                 WHERE user_id = ? ORDER BY created_at DESC''', (user_id,))
     rows = c.fetchall()
     conn.close()
-    return [{'text': r[0], 'url': r[1]} for r in rows]
+    return [{'id': r[0], 'text': r[1], 'url': r[2]} for r in rows]
+
+def delete_button(button_id: int, user_id: int) -> bool:
+    """Удаляет кнопку по ID"""
+    conn = sqlite3.connect('templates.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM saved_buttons WHERE id = ? AND user_id = ?', (button_id, user_id))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+def update_button(button_id: int, user_id: int, new_text: str, new_url: str) -> bool:
+    """Обновляет текст и URL кнопки"""
+    conn = sqlite3.connect('templates.db')
+    c = conn.cursor()
+    c.execute('''UPDATE saved_buttons 
+                 SET button_text = ?, button_url = ?, created_at = ? 
+                 WHERE id = ? AND user_id = ?''', 
+              (new_text, new_url, datetime.now(), button_id, user_id))
+    updated = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 # ==================== FSM СОСТОЯНИЯ ====================
 
 class PostForm(StatesGroup):
     waiting_for_content = State()
     waiting_for_buttons = State()
+
+class EditButtonForm(StatesGroup):
+    waiting_for_new_text = State()
+    waiting_for_new_url = State()
 
 # ==================== КЛАВИАТУРЫ ====================
 
@@ -86,9 +113,20 @@ def cancel_keyboard():
 def buttons_action_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="➕ Добавить кнопки")
+    builder.button(text="📚 Мои кнопки")
     builder.button(text="✅ Готово")
     builder.button(text="❌ Отмена")
-    builder.adjust(2, 1)
+    builder.adjust(2, 2)
+    return builder.as_markup(resize_keyboard=True)
+
+def post_creation_keyboard():
+    """Клавиатура для режима создания поста"""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="➕ Добавить кнопки")
+    builder.button(text="📚 Мои кнопки")
+    builder.button(text="✅ Готово")
+    builder.button(text="❌ Отмена")
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
@@ -98,7 +136,7 @@ async def cmd_start(message: types.Message):
     await message.answer(
         "🤖 **Генератор постов**\n\n"
         "🔹 **➕ Новый пост** — создать пост с кнопками\n"
-        "🔹 **📚 Мои кнопки** — часто используемые кнопки\n"
+        "🔹 **📚 Мои кнопки** — управление сохраненными кнопками\n"
         "🔹 **❓ Помощь** — подсказки",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
@@ -120,8 +158,10 @@ async def cmd_new(message: types.Message, state: FSMContext):
     )
 
 @dp.message(F.text == "📚 Мои кнопки")
-async def cmd_my_buttons(message: types.Message):
+async def cmd_my_buttons(message: types.Message, state: FSMContext):
+    """Показывает список сохраненных кнопок с действиями"""
     buttons = get_saved_buttons(message.from_user.id)
+    
     if not buttons:
         await message.answer(
             "📚 У тебя пока нет сохраненных кнопок.\n"
@@ -130,11 +170,195 @@ async def cmd_my_buttons(message: types.Message):
         )
         return
     
-    text = "**📚 Твои сохраненные кнопки:**\n\n"
-    for i, btn in enumerate(buttons, 1):
-        text += f"{i}. **{btn['text']}** — {btn['url']}\n"
+    # Создаем клавиатуру со списком кнопок
+    builder = InlineKeyboardBuilder()
+    for btn in buttons:
+        # Каждая кнопка: [Текст] [Копировать] [✏️] [🗑️]
+        row = [
+            types.InlineKeyboardButton(
+                text=f"📌 {btn['text'][:20]}", 
+                callback_data=f"view_btn:{btn['id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="📋", 
+                callback_data=f"copy_btn:{btn['id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="✏️", 
+                callback_data=f"edit_btn:{btn['id']}"
+            ),
+            types.InlineKeyboardButton(
+                text="🗑️", 
+                callback_data=f"delete_btn:{btn['id']}"
+            )
+        ]
+        builder.row(*row)
     
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
+    # Кнопка возврата в главное меню
+    builder.row(types.InlineKeyboardButton(
+        text="◀️ Назад", 
+        callback_data="back_to_main"
+    ))
+    
+    await message.answer(
+        "**📚 Твои сохраненные кнопки:**\n\n"
+        "Нажми на кнопку для просмотра или используй иконки:\n"
+        "📋 — скопировать\n"
+        "✏️ — редактировать\n"
+        "🗑️ — удалить",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data.startswith('view_btn:'))
+async def view_button_callback(callback: types.CallbackQuery):
+    """Показывает содержимое кнопки"""
+    button_id = int(callback.data.split(':')[1])
+    buttons = get_saved_buttons(callback.from_user.id)
+    
+    btn = next((b for b in buttons if b['id'] == button_id), None)
+    if not btn:
+        await callback.answer("❌ Кнопка не найдена")
+        return
+    
+    # Создаем клавиатуру для просмотра
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text="📋 Скопировать", 
+            callback_data=f"copy_btn:{button_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="✏️ Редактировать", 
+            callback_data=f"edit_btn:{button_id}"
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="🗑️ Удалить", 
+            callback_data=f"delete_btn:{button_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="◀️ Назад", 
+            callback_data="back_to_buttons"
+        )
+    )
+    
+    await callback.message.edit_text(
+        f"**📌 Кнопка:**\n"
+        f"**Текст:** {btn['text']}\n"
+        f"**Ссылка:** {btn['url']}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith('copy_btn:'))
+async def copy_button_callback(callback: types.CallbackQuery):
+    """Отправляет кнопку в формате для копирования"""
+    button_id = int(callback.data.split(':')[1])
+    buttons = get_saved_buttons(callback.from_user.id)
+    
+    btn = next((b for b in buttons if b['id'] == button_id), None)
+    if not btn:
+        await callback.answer("❌ Кнопка не найдена")
+        return
+    
+    # Отправляем отдельным сообщением для копирования
+    await callback.message.answer(
+        f"`{btn['text']} - {btn['url']}`\n\n"
+        f"✅ Скопируй эту строку и вставь при добавлении кнопок",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.answer("✅ Скопировано в сообщение выше")
+
+@dp.callback_query(lambda c: c.data.startswith('edit_btn:'))
+async def edit_button_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Начинает процесс редактирования кнопки"""
+    button_id = int(callback.data.split(':')[1])
+    
+    await state.update_data(editing_button_id=button_id)
+    await state.set_state(EditButtonForm.waiting_for_new_text)
+    
+    await callback.message.edit_text(
+        "✏️ **Редактирование кнопки**\n\n"
+        "Введи **новый текст** для кнопки:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.answer()
+
+@dp.message(EditButtonForm.waiting_for_new_text)
+async def process_edit_text(message: types.Message, state: FSMContext):
+    """Получает новый текст кнопки"""
+    await state.update_data(new_text=message.text)
+    await state.set_state(EditButtonForm.waiting_for_new_url)
+    
+    await message.answer(
+        "✏️ **Редактирование кнопки**\n\n"
+        "Теперь введи **новую ссылку**:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@dp.message(EditButtonForm.waiting_for_new_url)
+async def process_edit_url(message: types.Message, state: FSMContext):
+    """Получает новую ссылку и сохраняет изменения"""
+    data = await state.get_data()
+    button_id = data.get('editing_button_id')
+    new_text = data.get('new_text')
+    new_url = message.text.strip()
+    
+    # Проверяем ссылку
+    if not (new_url.startswith(('http://', 'https://', 'tg://', 't.me/'))):
+        await message.answer(
+            "❌ Неверный формат ссылки. Ссылка должна начинаться с http://, https://, tg:// или t.me/",
+            reply_markup=main_keyboard()
+        )
+        await state.clear()
+        return
+    
+    if new_url.startswith('t.me/'):
+        new_url = 'https://' + new_url
+    
+    # Обновляем в базе
+    if update_button(button_id, message.from_user.id, new_text, new_url):
+        await message.answer(
+            "✅ **Кнопка обновлена!**",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_keyboard()
+        )
+    else:
+        await message.answer(
+            "❌ Ошибка при обновлении кнопки",
+            reply_markup=main_keyboard()
+        )
+    
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data.startswith('delete_btn:'))
+async def delete_button_callback(callback: types.CallbackQuery):
+    """Удаляет кнопку"""
+    button_id = int(callback.data.split(':')[1])
+    
+    if delete_button(button_id, callback.from_user.id):
+        await callback.answer("✅ Кнопка удалена")
+        # Возвращаемся к списку кнопок
+        await cmd_my_buttons(callback.message, None)
+    else:
+        await callback.answer("❌ Не удалось удалить кнопку")
+
+@dp.callback_query(lambda c: c.data == 'back_to_buttons')
+async def back_to_buttons_callback(callback: types.CallbackQuery):
+    """Возврат к списку кнопок"""
+    await cmd_my_buttons(callback.message, None)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == 'back_to_main')
+async def back_to_main_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат в главное меню"""
+    await state.clear()
+    await callback.message.delete()
+    await cmd_start(callback.message)
+    await callback.answer()
 
 @dp.message(F.text == "❓ Помощь")
 async def cmd_help(message: types.Message):
@@ -143,11 +367,16 @@ async def cmd_help(message: types.Message):
         "**Как создать пост:**\n"
         "1. Нажми **➕ Новый пост**\n"
         "2. Отправь текст/фото/видео\n"
-        "3. Нажми **➕ Добавить кнопки**\n"
+        "3. Нажми **➕ Добавить кнопки** или **📚 Мои кнопки**\n"
         "4. Введи кнопки в формате:\n"
         "   `Текст - ссылка`\n"
         "   или `Кнопка1 - url1 | Кнопка2 - url2`\n"
-        "5. Нажми **✅ Готово** — пост готов к пересылке",
+        "5. Нажми **✅ Готово** — пост готов к пересылке\n\n"
+        "**Управление кнопками:**\n"
+        "• В разделе **📚 Мои кнопки** можно:\n"
+        "  - Копировать кнопку (📋)\n"
+        "  - Редактировать (✏️)\n"
+        "  - Удалять (🗑️)",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -170,16 +399,16 @@ async def handle_post_content(message: types.Message, state: FSMContext):
     if message.photo:
         content_data['media_type'] = 'photo'
         content_data['media_id'] = message.photo[-1].file_id
-        await message.answer("📸 **Фото получено!**\n\nНажми **➕ Добавить кнопки**", 
-                           parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
+        await message.answer("📸 **Фото получено!**\n\nТеперь добавь кнопки", 
+                           parse_mode=ParseMode.MARKDOWN, reply_markup=post_creation_keyboard())
     elif message.video:
         content_data['media_type'] = 'video'
         content_data['media_id'] = message.video.file_id
-        await message.answer("🎬 **Видео получено!**\n\nНажми **➕ Добавить кнопки**", 
-                           parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
+        await message.answer("🎬 **Видео получено!**\n\nТеперь добавь кнопки", 
+                           parse_mode=ParseMode.MARKDOWN, reply_markup=post_creation_keyboard())
     elif message.text:
-        await message.answer("✍️ **Текст получен!**\n\nНажми **➕ Добавить кнопки**", 
-                           parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
+        await message.answer("✍️ **Текст получен!**\n\nТеперь добавь кнопки", 
+                           parse_mode=ParseMode.MARKDOWN, reply_markup=post_creation_keyboard())
     else:
         await message.answer("❌ Неподдерживаемый формат. Отправь текст, фото или видео.")
         return
@@ -203,8 +432,82 @@ async def ask_for_buttons(message: types.Message, state: FSMContext):
         "Забронировать - https://booking.com | Отзывы - https://t.me/reviews\n"
         "```",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=buttons_action_keyboard()
+        reply_markup=post_creation_keyboard()
     )
+
+@dp.message(PostForm.waiting_for_buttons, F.text == "📚 Мои кнопки")
+async def use_saved_buttons(message: types.Message, state: FSMContext):
+    """Показывает сохраненные кнопки для добавления в пост"""
+    buttons = get_saved_buttons(message.from_user.id)
+    
+    if not buttons:
+        await message.answer(
+            "📚 У тебя пока нет сохраненных кнопок.",
+            reply_markup=post_creation_keyboard()
+        )
+        return
+    
+    # Создаем клавиатуру с кнопками для добавления
+    builder = InlineKeyboardBuilder()
+    for btn in buttons[:10]:  # Показываем последние 10
+        builder.button(
+            text=f"{btn['text'][:20]}", 
+            callback_data=f"add_btn_to_post:{btn['id']}"
+        )
+    builder.adjust(2)
+    
+    # Кнопка возврата
+    builder.row(types.InlineKeyboardButton(
+        text="◀️ Назад", 
+        callback_data="back_to_post_creation"
+    ))
+    
+    await message.answer(
+        "**Выбери кнопку для добавления в пост:**",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data.startswith('add_btn_to_post:'))
+async def add_saved_button_to_post(callback: types.CallbackQuery, state: FSMContext):
+    """Добавляет сохраненную кнопку в текущий пост"""
+    button_id = int(callback.data.split(':')[1])
+    buttons = get_saved_buttons(callback.from_user.id)
+    
+    btn = next((b for b in buttons if b['id'] == button_id), None)
+    if not btn:
+        await callback.answer("❌ Кнопка не найдена")
+        return
+    
+    # Получаем текущие кнопки из состояния
+    data = await state.get_data()
+    existing_buttons = data.get('buttons', [])
+    
+    # Добавляем новую кнопку
+    existing_buttons.append([{'text': btn['text'], 'url': btn['url']}])
+    await state.update_data(buttons=existing_buttons)
+    
+    # Показываем обновленный предпросмотр
+    await show_preview(callback.message, state)
+    
+    await callback.message.delete()
+    await callback.message.answer(
+        f"✅ Кнопка **{btn['text']}** добавлена!\n"
+        f"Можешь добавить еще или нажать **✅ Готово**",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=post_creation_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == 'back_to_post_creation')
+async def back_to_post_creation(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат к созданию поста"""
+    await callback.message.delete()
+    await callback.message.answer(
+        "Продолжай добавление кнопок или нажми **✅ Готово**",
+        reply_markup=post_creation_keyboard()
+    )
+    await callback.answer()
 
 @dp.message(PostForm.waiting_for_buttons, F.text)
 async def handle_buttons_input(message: types.Message, state: FSMContext):
@@ -263,7 +566,7 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
         await message.answer(
             "✅ Кнопки добавлены!\n"
             "Можешь добавить еще или нажать **✅ Готово**",
-            reply_markup=buttons_action_keyboard()
+            reply_markup=post_creation_keyboard()
         )
     else:
         await message.answer(
