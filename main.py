@@ -30,14 +30,6 @@ dp = Dispatcher(storage=storage)
 def init_db():
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS templates
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  content TEXT,
-                  buttons TEXT,
-                  media_type TEXT,
-                  media_id TEXT,
-                  created_at TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS saved_buttons
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -49,23 +41,7 @@ def init_db():
 
 init_db()
 
-# ==================== FSM СОСТОЯНИЯ ====================
-
-class PostForm(StatesGroup):
-    waiting_for_content = State()
-    waiting_for_buttons = State()
-
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ====================
-
-def save_template(user_id: int, content: str, buttons: list, media_type: str = None, media_id: str = None):
-    """Сохраняет пост в базу"""
-    conn = sqlite3.connect('templates.db')
-    c = conn.cursor()
-    c.execute('''INSERT INTO templates (user_id, content, buttons, media_type, media_id, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)''',
-              (user_id, content, json.dumps(buttons), media_type, media_id, datetime.now()))
-    conn.commit()
-    conn.close()
 
 def save_button(user_id: int, text: str, url: str):
     """Сохраняет кнопку в базу часто используемых"""
@@ -85,6 +61,12 @@ def get_saved_buttons(user_id: int) -> list:
     rows = c.fetchall()
     conn.close()
     return [{'text': r[0], 'url': r[1]} for r in rows]
+
+# ==================== FSM СОСТОЯНИЯ ====================
+
+class PostForm(StatesGroup):
+    waiting_for_content = State()
+    waiting_for_buttons = State()
 
 # ==================== КЛАВИАТУРЫ ====================
 
@@ -155,7 +137,6 @@ async def cmd_my_buttons(message: types.Message):
     await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
 
 @dp.message(F.text == "❓ Помощь")
-@dp.message(Command('help'))
 async def cmd_help(message: types.Message):
     await message.answer(
         "**📖 Помощь**\n\n"
@@ -166,13 +147,12 @@ async def cmd_help(message: types.Message):
         "4. Введи кнопки в формате:\n"
         "   `Текст - ссылка`\n"
         "   или `Кнопка1 - url1 | Кнопка2 - url2`\n"
-        "5. Нажми **✅ Готово** — пост сохранится",
+        "5. Нажми **✅ Готово** — пост готов к пересылке",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
 
 @dp.message(F.text == "❌ Отмена")
-@dp.message(Command('cancel'))
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Действие отменено", reply_markup=main_keyboard())
@@ -310,7 +290,7 @@ async def show_preview(message: types.Message, state: FSMContext):
         builder.adjust(1)
         kb = builder.as_markup()
     
-    # Отправляем предпросмотр (только контент пользователя)
+    # Отправляем предпросмотр
     if media_type == 'photo' and media_id:
         await message.answer_photo(
             photo=media_id, 
@@ -340,19 +320,10 @@ async def finish_post(message: types.Message, state: FSMContext):
     media_id = data.get('media_id')
     buttons = data.get('buttons', [])
     
-    # Сохраняем в базу
-    save_template(
-        user_id=message.from_user.id,
-        content=content_text,
-        buttons=buttons,
-        media_type=media_type,
-        media_id=media_id
-    )
-    
-    # Очищаем состояние (блокируем редактирование)
+    # Очищаем состояние
     await state.clear()
     
-    # Показываем финальный предпросмотр
+    # Показываем финальный пост
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
