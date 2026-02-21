@@ -75,7 +75,6 @@ cleanup_old_templates()
 class PostForm(StatesGroup):
     waiting_for_content = State()
     waiting_for_buttons = State()
-    editing_buttons = State()
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ====================
 
@@ -270,14 +269,15 @@ async def show_post_callback(callback: types.CallbackQuery):
         elif kb:
             await callback.message.answer(" ", reply_markup=kb)
     
-    # Добавляем кнопку с ключом для копирования
+    # Добавляем кнопку с ключом
     key_kb = InlineKeyboardBuilder()
     key_kb.button(
         text=f"🔑 Скопировать ключ: {key}",
         callback_data=f"copy_key:{key}"
     )
     await callback.message.answer(
-        f"**Ключ для публикации:**\n`{key}`",
+        f"**Ключ для публикации:**\n`{key}`\n\n"
+        f"Или используй готовую команду:\n`@{callback.message.bot.username} {key}`",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=key_kb.as_markup()
     )
@@ -286,12 +286,15 @@ async def show_post_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith('copy_key:'))
 async def copy_key_callback(callback: types.CallbackQuery):
-    """Подсказка по копированию ключа"""
+    """Показывает готовую команду для копирования"""
     key = callback.data.split(':')[1]
+    bot_username = callback.message.bot.username
+    
+    # Отправляем сообщение с готовой командой
     await callback.message.answer(
-        f"✅ **Ключ скопирован!**\n\n"
-        f"Чтобы опубликовать пост, введи в группе:\n"
-        f"`@{callback.message.bot.username} {key}`",
+        f"✅ **Готовая команда для публикации:**\n\n"
+        f"`@{bot_username} {key}`\n\n"
+        f"Просто скопируй это сообщение целиком и вставь в группу!",
         parse_mode=ParseMode.MARKDOWN
     )
     await callback.answer()
@@ -324,9 +327,11 @@ async def cmd_help(message: types.Message):
         "4. Введи кнопки в формате:\n"
         "   `Текст - ссылка`\n"
         "   или `Кнопка1 - url1 | Кнопка2 - url2`\n"
-        "5. Нажми **✅ Готово**\n\n"
+        "5. Нажми **✅ Готово** — пост сохранится\n\n"
         "**Как опубликовать:**\n"
-        "В группе введи: `@твой_бот КЛЮЧ`",
+        "После создания ты получишь готовую команду:\n"
+        "`@твой_бот КЛЮЧ`\n"
+        "Просто скопируй и вставь в группу!",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -549,25 +554,19 @@ async def finish_post(message: types.Message, state: FSMContext):
         elif buttons:
             await message.answer(" ", reply_markup=kb)
     
-    # Создаем клавиатуру с кнопкой для копирования
-    copy_kb = InlineKeyboardBuilder()
-    copy_kb.button(
-        text=f"🔑 Копировать ключ: {key}",
-        callback_data=f"copy_key:{key}"
-    )
+    # Получаем username бота
+    bot_username = (await message.bot.me()).username
     
-    #  Отправляем ключ отдельным сообщением в красивом формате
+    # Отправляем ГОТОВУЮ КОМАНДУ для копирования
     await message.answer(
         f"✅ **Пост готов к публикации!**\n\n"
-        f"**Ключ:**\n"
-        f"`{key}`\n\n"
-        f"**Как опубликовать:**\n"
-        f"1️⃣ Скопируй ключ выше\n"
-        f"2️⃣ Введи в группе:\n"
-        f"`@{message.bot.username} {key}`\n"
+        f"**Готовая команда (просто скопируй целиком):**\n\n"
+        f"`@{bot_username} {key}`\n\n"
+        f"📋 **Как использовать:**\n"
+        f"1️⃣ Скопируй команду выше\n"
+        f"2️⃣ Вставь в нужную группу\n"
         f"3️⃣ Нажми на появившееся превью",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=copy_kb.as_markup()
+        parse_mode=ParseMode.MARKDOWN
     )
     
     # Возвращаем главное меню
@@ -639,23 +638,10 @@ async def inline_query_handler(query: InlineQuery):
         reply_markup = builder.as_markup()
     
     # Создаем контент для публикации
-    if template['media_type'] == 'photo' and template['media_id']:
-        # Для фото нужна специальная обработка в inline-режиме
-        # Пока возвращаем текст
-        input_content = InputTextMessageContent(
-            message_text=template['content'] or " ",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif template['media_type'] == 'video' and template['media_id']:
-        input_content = InputTextMessageContent(
-            message_text=template['content'] or " ",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        input_content = InputTextMessageContent(
-            message_text=template['content'] or " ",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    input_content = InputTextMessageContent(
+        message_text=template['content'] or " ",
+        parse_mode=ParseMode.MARKDOWN
+    )
     
     created = datetime.fromisoformat(template['created_at'])
     date_str = created.strftime("%d.%m.%Y %H:%M")
