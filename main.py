@@ -5,7 +5,7 @@ import sqlite3
 import random
 import string
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -53,6 +53,23 @@ def init_db():
 
 init_db()
 
+# ==================== АВТОУДАЛЕНИЕ СТАРЫХ ПОСТОВ ====================
+
+def cleanup_old_templates():
+    """Удаляет посты старше 30 дней"""
+    conn = sqlite3.connect('templates.db')
+    c = conn.cursor()
+    month_ago = datetime.now() - timedelta(days=30)
+    c.execute('DELETE FROM templates WHERE created_at < ?', (month_ago,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    if deleted > 0:
+        logger.info(f"🧹 Удалено {deleted} старых постов")
+
+# Вызываем при каждом запуске
+cleanup_old_templates()
+
 # ==================== FSM СОСТОЯНИЯ ====================
 
 class PostForm(StatesGroup):
@@ -91,18 +108,20 @@ def get_template(key: str) -> dict | None:
             'content': row[3],
             'buttons': json.loads(row[4]) if row[4] else [],
             'media_type': row[5],
-            'media_id': row[6]
+            'media_id': row[6],
+            'created_at': row[7]
         }
     return None
 
 def get_user_templates(user_id: int) -> list:
+    """Возвращает посты пользователя с сортировкой по дате (сначала новые)"""
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
     c.execute('''SELECT id, title, created_at FROM templates 
-                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 20''', (user_id,))
+                 WHERE user_id = ? ORDER BY created_at DESC''', (user_id,))
     rows = c.fetchall()
     conn.close()
-    return [{'id': r[0], 'title': r[1]} for r in rows]
+    return [{'id': r[0], 'title': r[1], 'created_at': r[2]} for r in rows]
 
 def save_button(user_id: int, text: str, url: str):
     conn = sqlite3.connect('templates.db')
@@ -152,7 +171,7 @@ async def cmd_start(message: types.Message):
     await message.answer(
         "🤖 **Генератор постов**\n\n"
         "🔹 **➕ Новый пост** — создать пост с кнопками\n"
-        "🔹 **📋 Мои посты** — список сохраненных\n"
+        "🔹 **📋 Мои посты** — список сохраненных (с датой)\n"
         "🔹 **📚 Мои кнопки** — часто используемые\n"
         "🔹 **❓ Помощь** — подсказки",
         parse_mode=ParseMode.MARKDOWN,
@@ -185,12 +204,97 @@ async def cmd_list(message: types.Message):
         )
         return
     
-    text = "**📋 Твои последние посты:**\n\n"
+    # Создаем inline-клавиатуру со ссылками на посты
+    builder = InlineKeyboardBuilder()
     for t in templates:
-        text += f"🔹 `{t['id']}` — {t['title']}\n"
+        # Форматируем дату
+        created = datetime.fromisoformat(t['created_at'])
+        date_str = created.strftime("%d.%m.%Y %H:%M")
+        
+        # Добавляем кнопку с названием поста
+        builder.button(
+            text=f"📄 {t['title']} — {date_str}",
+            callback_data=f"show_post:{t['id']}"
+        )
+    builder.adjust(1)
     
-    text += "\nЧтобы опубликовать, введи в группе:\n`@твой_бот КЛЮЧ`"
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
+    await message.answer(
+        "**📋 Твои посты (нажми на пост чтобы посмотреть):**",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data.startswith('show_post:'))
+async def show_post_callback(callback: types.CallbackQuery):
+    """Показывает пост по запросу из списка"""
+    key = callback.data.split(':')[1]
+    template = get_template(key)
+    
+    if not template:
+        await callback.message.answer("❌ Пост не найден")
+        await callback.answer()
+        return
+    
+    # Создаем клавиатуру из кнопок
+    kb = None
+    if template['buttons']:
+        builder = InlineKeyboardBuilder()
+        for row in template['buttons']:
+            for btn in row:
+                builder.button(text=btn['text'], url=btn['url'])
+        builder.adjust(1)
+        kb = builder.as_markup()
+    
+    # Отправляем пост
+    if template['media_type'] == 'photo' and template['media_id']:
+        await callback.message.answer_photo(
+            photo=template['media_id'],
+            caption=template['content'] if template['content'] else None,
+            reply_markup=kb,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif template['media_type'] == 'video' and template['media_id']:
+        await callback.message.answer_video(
+            video=template['media_id'],
+            caption=template['content'] if template['content'] else None,
+            reply_markup=kb,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        if template['content']:
+            await callback.message.answer(
+                template['content'],
+                reply_markup=kb,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif kb:
+            await callback.message.answer(" ", reply_markup=kb)
+    
+    # Добавляем кнопку с ключом для копирования
+    key_kb = InlineKeyboardBuilder()
+    key_kb.button(
+        text=f"🔑 Скопировать ключ: {key}",
+        callback_data=f"copy_key:{key}"
+    )
+    await callback.message.answer(
+        f"**Ключ для публикации:**\n`{key}`",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=key_kb.as_markup()
+    )
+    
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith('copy_key:'))
+async def copy_key_callback(callback: types.CallbackQuery):
+    """Подсказка по копированию ключа"""
+    key = callback.data.split(':')[1]
+    await callback.message.answer(
+        f"✅ **Ключ скопирован!**\n\n"
+        f"Чтобы опубликовать пост, введи в группе:\n"
+        f"`@{callback.message.bot.username} {key}`",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.answer()
 
 @dp.message(F.text == "📚 Мои кнопки")
 async def cmd_my_buttons(message: types.Message):
@@ -366,7 +470,7 @@ async def show_preview(message: types.Message, state: FSMContext):
         builder.adjust(1)
         kb = builder.as_markup()
     
-    # Отправляем предпросмотр (только контент пользователя, без служебных фраз)
+    # Отправляем предпросмотр (только контент пользователя)
     if media_type == 'photo' and media_id:
         await message.answer_photo(
             photo=media_id, 
@@ -412,7 +516,10 @@ async def finish_post(message: types.Message, state: FSMContext):
         media_id=media_id
     )
     
-    # Показываем финальный предпросмотр (только контент пользователя)
+    # Очищаем состояние (блокируем редактирование)
+    await state.clear()
+    
+    # Показываем финальный предпросмотр
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
@@ -442,18 +549,32 @@ async def finish_post(message: types.Message, state: FSMContext):
         elif buttons:
             await message.answer(" ", reply_markup=kb)
     
-    # Отправляем ключ отдельным сообщением
-    await message.answer(
-        f"✅ **Пост готов!**\n\n"
-        f"**Ключ:** `{key}`\n\n"
-        f"📋 **Как опубликовать:**\n"
-        f"Введи в группе:\n"
-        f"`@{message.bot.username} {key}`",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_keyboard()
+    # Создаем клавиатуру с кнопкой для копирования
+    copy_kb = InlineKeyboardBuilder()
+    copy_kb.button(
+        text=f"🔑 Копировать ключ: {key}",
+        callback_data=f"copy_key:{key}"
     )
     
-    await state.clear()
+    #  Отправляем ключ отдельным сообщением в красивом формате
+    await message.answer(
+        f"✅ **Пост готов к публикации!**\n\n"
+        f"**Ключ:**\n"
+        f"`{key}`\n\n"
+        f"**Как опубликовать:**\n"
+        f"1️⃣ Скопируй ключ выше\n"
+        f"2️⃣ Введи в группе:\n"
+        f"`@{message.bot.username} {key}`\n"
+        f"3️⃣ Нажми на появившееся превью",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=copy_kb.as_markup()
+    )
+    
+    # Возвращаем главное меню
+    await message.answer(
+        "Выбери следующее действие:",
+        reply_markup=main_keyboard()
+    )
 
 # ==================== INLINE РЕЖИМ ====================
 
@@ -466,11 +587,13 @@ async def inline_query_handler(query: InlineQuery):
         results = []
         if templates:
             for t in templates[:10]:
+                created = datetime.fromisoformat(t['created_at'])
+                date_str = created.strftime("%d.%m.%Y %H:%M")
                 results.append(
                     InlineQueryResultArticle(
                         id=t['id'],
                         title=f'📄 {t["title"]}',
-                        description=f'Ключ: {t["id"]}',
+                        description=f'Создан: {date_str} | Ключ: {t["id"]}',
                         input_message_content=InputTextMessageContent(
                             message_text=f'Пост с ключом {t["id"]}',
                             parse_mode=ParseMode.MARKDOWN
@@ -534,10 +657,13 @@ async def inline_query_handler(query: InlineQuery):
             parse_mode=ParseMode.MARKDOWN
         )
     
+    created = datetime.fromisoformat(template['created_at'])
+    date_str = created.strftime("%d.%m.%Y %H:%M")
+    
     results = [InlineQueryResultArticle(
         id=key,
         title=f'📄 {template["title"]}',
-        description='Нажми, чтобы отправить',
+        description=f'Создан: {date_str}',
         input_message_content=input_content,
         reply_markup=reply_markup
     )]
