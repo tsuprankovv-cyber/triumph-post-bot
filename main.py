@@ -33,7 +33,6 @@ dp = Dispatcher(storage=storage)
 def init_db():
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
-    # Таблица для постов
     c.execute('''CREATE TABLE IF NOT EXISTS templates
                  (id TEXT PRIMARY KEY,
                   user_id INTEGER,
@@ -43,7 +42,6 @@ def init_db():
                   media_type TEXT,
                   media_id TEXT,
                   created_at TIMESTAMP)''')
-    # Таблица для сохраненных кнопок
     c.execute('''CREATE TABLE IF NOT EXISTS saved_buttons
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -106,8 +104,6 @@ def get_user_templates(user_id: int) -> list:
     conn.close()
     return [{'id': r[0], 'title': r[1]} for r in rows]
 
-# ==================== ФУНКЦИИ ДЛЯ СОХРАНЕННЫХ КНОПОК ====================
-
 def save_button(user_id: int, text: str, url: str):
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
@@ -149,27 +145,16 @@ def buttons_action_keyboard():
     builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True)
 
-def saved_buttons_keyboard(user_id: int):
-    buttons = get_saved_buttons(user_id)
-    builder = ReplyKeyboardBuilder()
-    for btn in buttons[:6]:
-        builder.button(text=f"📌 {btn['text'][:20]}")
-    builder.button(text="➕ Новая кнопка")
-    builder.button(text="❌ Назад")
-    builder.adjust(2, 2, 2, 2)
-    return builder.as_markup(resize_keyboard=True)
-
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "🤖 **Генератор постов v2.0**\n\n"
-        "🔹 **➕ Новый пост** — создать пост (текст/фото/видео + кнопки)\n"
-        "🔹 **📋 Мои посты** — список сохраненных постов\n"
-        "🔹 **📚 Мои кнопки** — часто используемые кнопки\n"
-        "🔹 **❓ Помощь** — подсказки\n\n"
-        "Нажми **➕ Новый пост** чтобы начать",
+        "🤖 **Генератор постов**\n\n"
+        "🔹 **➕ Новый пост** — создать пост с кнопками\n"
+        "🔹 **📋 Мои посты** — список сохраненных\n"
+        "🔹 **📚 Мои кнопки** — часто используемые\n"
+        "🔹 **❓ Помощь** — подсказки",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -179,19 +164,17 @@ async def cmd_start(message: types.Message):
 async def cmd_new(message: types.Message, state: FSMContext):
     await state.set_state(PostForm.waiting_for_content)
     await message.answer(
-        "📝 **Шаг 1: Содержание поста**\n\n"
-        "Отправь мне **текст**, **фото** или **видео**.\n\n"
+        "📝 **Создание поста**\n\n"
+        "Отправь **текст**, **фото** или **видео**.\n\n"
         "Можно использовать:\n"
         "• **жирный**, *курсив*, `код`\n"
         "• 😊 эмодзи\n"
-        "• [ссылки](https://example.com)\n\n"
-        "⬇️ Просто отправь сообщение",
+        "• [ссылки](https://example.com)",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=cancel_keyboard()
     )
 
 @dp.message(F.text == "📋 Мои посты")
-@dp.message(Command('list'))
 async def cmd_list(message: types.Message):
     templates = get_user_templates(message.from_user.id)
     if not templates:
@@ -215,7 +198,7 @@ async def cmd_my_buttons(message: types.Message):
     if not buttons:
         await message.answer(
             "📚 У тебя пока нет сохраненных кнопок.\n"
-            "Они будут добавляться автоматически, когда ты будешь создавать посты.",
+            "Они будут добавляться автоматически при создании постов.",
             reply_markup=main_keyboard()
         )
         return
@@ -227,25 +210,19 @@ async def cmd_my_buttons(message: types.Message):
     await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_keyboard())
 
 @dp.message(F.text == "❓ Помощь")
-@dp.message(Command('help'))
 async def cmd_help(message: types.Message):
     await message.answer(
-        "**📖 Подробная помощь**\n\n"
-        "**1. Создание поста:**\n"
-        "   • Нажми **➕ Новый пост**\n"
-        "   • Отправь текст/фото/видео\n"
-        "   • Нажми **➕ Добавить кнопки**\n\n"
-        "**2. Формат кнопок:**\n"
-        "   • Каждая строка = одна кнопка\n"
-        "   • Разделитель: `-` или `|`\n"
-        "   • Пример: `Подобрать тур - https://site.ru`\n\n"
-        "**3. Несколько кнопок в ряд:**\n"
-        "   • Используй `|` между кнопками\n"
-        "   • Пример: `Кнопка 1 - url1 | Кнопка 2 - url2`\n\n"
-        "**4. Завершение:**\n"
-        "   • Нажми **✅ Готово** — получишь ключ\n\n"
-        "**5. Публикация:**\n"
-        "   • Введи в группе: `@твой_бот КЛЮЧ`",
+        "**📖 Помощь**\n\n"
+        "**Как создать пост:**\n"
+        "1. Нажми **➕ Новый пост**\n"
+        "2. Отправь текст/фото/видео\n"
+        "3. Нажми **➕ Добавить кнопки**\n"
+        "4. Введи кнопки в формате:\n"
+        "   `Текст - ссылка`\n"
+        "   или `Кнопка1 - url1 | Кнопка2 - url2`\n"
+        "5. Нажми **✅ Готово**\n\n"
+        "**Как опубликовать:**\n"
+        "В группе введи: `@твой_бот КЛЮЧ`",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -269,15 +246,15 @@ async def handle_post_content(message: types.Message, state: FSMContext):
     if message.photo:
         content_data['media_type'] = 'photo'
         content_data['media_id'] = message.photo[-1].file_id
-        await message.answer("📸 **Фото получено!**\n\nТеперь нажми **➕ Добавить кнопки**", 
+        await message.answer("📸 **Фото получено!**\n\nНажми **➕ Добавить кнопки**", 
                            parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
     elif message.video:
         content_data['media_type'] = 'video'
         content_data['media_id'] = message.video.file_id
-        await message.answer("🎬 **Видео получено!**\n\nТеперь нажми **➕ Добавить кнопки**", 
+        await message.answer("🎬 **Видео получено!**\n\nНажми **➕ Добавить кнопки**", 
                            parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
     elif message.text:
-        await message.answer("✍️ **Текст получен!**\n\nТеперь нажми **➕ Добавить кнопки**", 
+        await message.answer("✍️ **Текст получен!**\n\nНажми **➕ Добавить кнопки**", 
                            parse_mode=ParseMode.MARKDOWN, reply_markup=buttons_action_keyboard())
     else:
         await message.answer("❌ Неподдерживаемый формат. Отправь текст, фото или видео.")
@@ -292,16 +269,15 @@ async def handle_post_content(message: types.Message, state: FSMContext):
 async def ask_for_buttons(message: types.Message, state: FSMContext):
     await message.answer(
         "🔘 **Добавление кнопок**\n\n"
-        "**Форматы ввода:**\n"
-        "• `Текст кнопки - ссылка` — одна кнопка\n"
-        "• `Кнопка 1 - url1 | Кнопка 2 - url2` — две в ряд\n"
-        "• Каждая строка = новая строка кнопок\n\n"
+        "**Форматы:**\n"
+        "• `Текст - ссылка` — одна кнопка\n"
+        "• `Кнопка1 - url1 | Кнопка2 - url2` — две в ряд\n"
+        "• Каждая новая строка = новая строка кнопок\n\n"
         "**Пример:**\n"
         "```\n"
         "Подобрать тур - https://vCard.guru/olga.tsuprankova\n"
         "Забронировать - https://booking.com | Отзывы - https://t.me/reviews\n"
-        "```\n\n"
-        "Отправь кнопки или нажми **✅ Готово**",
+        "```",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=buttons_action_keyboard()
     )
@@ -332,7 +308,9 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
                 parts = re.split(r'\s*[-|]\s*', btn_text.strip(), maxsplit=1)
                 if len(parts) == 2:
                     btn_name, btn_url = parts
-                    if btn_url.startswith(('http://', 'https://')):
+                    if btn_url.startswith(('http://', 'https://', 'tg://', 't.me/')):
+                        if btn_url.startswith('t.me/'):
+                            btn_url = 'https://' + btn_url
                         row.append({'text': btn_name.strip(), 'url': btn_url.strip()})
                         save_button(message.from_user.id, btn_name.strip(), btn_url.strip())
             if row:
@@ -342,30 +320,21 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
             parts = re.split(r'\s*[-|]\s*', line.strip(), maxsplit=1)
             if len(parts) == 2:
                 btn_name, btn_url = parts
-                if btn_url.startswith(('http://', 'https://')):
+                if btn_url.startswith(('http://', 'https://', 'tg://', 't.me/')):
+                    if btn_url.startswith('t.me/'):
+                        btn_url = 'https://' + btn_url
                     all_buttons.append([{'text': btn_name.strip(), 'url': btn_url.strip()}])
                     save_button(message.from_user.id, btn_name.strip(), btn_url.strip())
     
     if all_buttons:
-        await state.update_data(buttons=all_buttons)
+        # Получаем текущие кнопки из состояния и добавляем новые
+        data = await state.get_data()
+        existing_buttons = data.get('buttons', [])
+        existing_buttons.extend(all_buttons)
+        await state.update_data(buttons=existing_buttons)
         
         # Показываем предпросмотр
-        kb = None
-        if all_buttons:
-            builder = InlineKeyboardBuilder()
-            for row in all_buttons:
-                for btn in row:
-                    builder.button(text=btn['text'], url=btn['url'])
-            builder.adjust(1)
-            kb = builder.as_markup()
-        
-        data = await state.get_data()
-        preview_text = data.get('text', '')
-        if preview_text:
-            await message.answer(f"**Текущий пост:**\n\n{preview_text}", 
-                               parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-        else:
-            await message.answer("**Предпросмотр кнопок:**", reply_markup=kb)
+        await show_preview(message, state)
         
         await message.answer(
             "✅ Кнопки добавлены!\n"
@@ -379,6 +348,45 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
 
+async def show_preview(message: types.Message, state: FSMContext):
+    """Показывает полный предпросмотр поста без лишних надписей"""
+    data = await state.get_data()
+    content_text = data.get('text', '')
+    media_type = data.get('media_type')
+    media_id = data.get('media_id')
+    buttons = data.get('buttons', [])
+    
+    # Создаем клавиатуру из кнопок
+    kb = None
+    if buttons:
+        builder = InlineKeyboardBuilder()
+        for row in buttons:
+            for btn in row:
+                builder.button(text=btn['text'], url=btn['url'])
+        builder.adjust(1)
+        kb = builder.as_markup()
+    
+    # Отправляем предпросмотр (только контент пользователя, без служебных фраз)
+    if media_type == 'photo' and media_id:
+        await message.answer_photo(
+            photo=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif media_type == 'video' and media_id:
+        await message.answer_video(
+            video=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        if content_text:
+            await message.answer(content_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        elif buttons:
+            await message.answer(" ", reply_markup=kb)
+
 # ==================== ЗАВЕРШЕНИЕ ПОСТА ====================
 
 async def finish_post(message: types.Message, state: FSMContext):
@@ -388,7 +396,7 @@ async def finish_post(message: types.Message, state: FSMContext):
     media_id = data.get('media_id')
     buttons = data.get('buttons', [])
     
-    # Создаем заголовок
+    # Создаем заголовок для списка
     if content_text:
         title = (content_text[:30] + '...') if len(content_text) > 30 else content_text
     else:
@@ -404,7 +412,7 @@ async def finish_post(message: types.Message, state: FSMContext):
         media_id=media_id
     )
     
-    # Показываем финальный предпросмотр
+    # Показываем финальный предпросмотр (только контент пользователя)
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
@@ -414,23 +422,33 @@ async def finish_post(message: types.Message, state: FSMContext):
         builder.adjust(1)
         kb = builder.as_markup()
     
-    preview_text = f"**Финальный пост:**\n\n{content_text}" if content_text else "**Финальный пост**"
-    
     if media_type == 'photo' and media_id:
-        await message.answer_photo(photo=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        await message.answer_photo(
+            photo=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif media_type == 'video' and media_id:
-        await message.answer_video(video=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        await message.answer_video(
+            video=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
     else:
-        await message.answer(preview_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        if content_text:
+            await message.answer(content_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        elif buttons:
+            await message.answer(" ", reply_markup=kb)
     
-    # Отправляем ключ
+    # Отправляем ключ отдельным сообщением
     await message.answer(
-        f"✅ **ГОТОВО! КЛЮЧ ПОСТА:**\n\n"
-        f"`{key}`\n\n"
+        f"✅ **Пост готов!**\n\n"
+        f"**Ключ:** `{key}`\n\n"
         f"📋 **Как опубликовать:**\n"
-        f"В группе введи:\n"
-        f"`@{message.bot.username} {key}`\n\n"
-        f"💾 Пост сохранен в «Мои посты»",
+        f"Введи в группе:\n"
+        f"`@{message.bot.username} {key}`",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -487,6 +505,7 @@ async def inline_query_handler(query: InlineQuery):
         await query.answer(results, cache_time=1)
         return
     
+    # Создаем клавиатуру для inline-режима
     reply_markup = None
     if template['buttons']:
         builder = InlineKeyboardBuilder()
@@ -496,14 +515,30 @@ async def inline_query_handler(query: InlineQuery):
         builder.adjust(1)
         reply_markup = builder.as_markup()
     
+    # Создаем контент для публикации
+    if template['media_type'] == 'photo' and template['media_id']:
+        # Для фото нужна специальная обработка в inline-режиме
+        # Пока возвращаем текст
+        input_content = InputTextMessageContent(
+            message_text=template['content'] or " ",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif template['media_type'] == 'video' and template['media_id']:
+        input_content = InputTextMessageContent(
+            message_text=template['content'] or " ",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        input_content = InputTextMessageContent(
+            message_text=template['content'] or " ",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
     results = [InlineQueryResultArticle(
         id=key,
         title=f'📄 {template["title"]}',
         description='Нажми, чтобы отправить',
-        input_message_content=InputTextMessageContent(
-            message_text=template['content'] or " ",
-            parse_mode=ParseMode.MARKDOWN
-        ),
+        input_message_content=input_content,
         reply_markup=reply_markup
     )]
     
@@ -534,7 +569,7 @@ async def cmd_delete(message: types.Message):
 # ==================== ЗАПУСК ====================
 
 async def main():
-    logger.info("🚀 Бот-генератор v2.0 запускается...")
+    logger.info("🚀 Бот-генератор запускается...")
     await bot.delete_webhook()
     await dp.start_polling(bot)
 
