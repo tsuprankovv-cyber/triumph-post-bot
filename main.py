@@ -530,6 +530,9 @@ async def finish_post(message: types.Message, state: FSMContext):
     # Очищаем состояние (блокируем редактирование)
     await state.clear()
     
+    # Очищаем состояние (блокируем редактирование)
+    await state.clear()
+    
     # Показываем финальный предпросмотр
     kb = None
     if buttons:
@@ -585,11 +588,17 @@ async def finish_post(message: types.Message, state: FSMContext):
 
 @dp.inline_query()
 async def inline_query_handler(query: InlineQuery):
+    """Обрабатывает inline-запросы @бот КЛЮЧ"""
     key = query.query.strip()
+    user_id = query.from_user.id
+    
+    logger.info(f"🔍 Inline запрос от пользователя {user_id}: ключ='{key}'")
     
     if not key:
-        templates = get_user_templates(query.from_user.id)
+        # Пустой запрос — показываем последние посты
+        templates = get_user_templates(user_id)
         results = []
+        
         if templates:
             for t in templates[:10]:
                 created = datetime.fromisoformat(t['created_at'])
@@ -609,19 +618,24 @@ async def inline_query_handler(query: InlineQuery):
             results.append(
                 InlineQueryResultArticle(
                     id='help',
-                    title='📝 Введи ключ поста',
-                    description='Например: ABC123',
+                    title='📝 Нет сохраненных постов',
+                    description='Создай новый пост через /new',
                     input_message_content=InputTextMessageContent(
-                        message_text='Введи ключ поста, например: `@твой_бот ABC123`',
-                        parse_mode=ParseMode.MARKDOWN
+                        message_text='Создай новый пост через /new'
                     )
                 )
             )
+        
         await query.answer(results, cache_time=1)
+        logger.info(f"✅ Отправлено {len(results)} результатов (пустой запрос)")
         return
     
+    # Ищем шаблон по ключу
+    logger.info(f"🔎 Поиск шаблона с ключом '{key}'")
     template = get_template(key)
+    
     if not template:
+        logger.warning(f"❌ Шаблон с ключом '{key}' не найден")
         results = [InlineQueryResultArticle(
             id='not_found',
             title='❌ Пост не найден',
@@ -633,9 +647,12 @@ async def inline_query_handler(query: InlineQuery):
         await query.answer(results, cache_time=1)
         return
     
+    logger.info(f"✅ Шаблон найден: {template['title']}, медиа: {template['media_type']}")
+    
     # Создаем клавиатуру для кнопок
     reply_markup = None
     if template['buttons']:
+        logger.info(f"🔘 Найдено {len(template['buttons'])} рядов кнопок")
         builder = InlineKeyboardBuilder()
         for row in template['buttons']:
             for btn in row:
@@ -648,56 +665,107 @@ async def inline_query_handler(query: InlineQuery):
     
     # Получаем URL для медиа через Telegram API
     async def get_file_url(file_id: str) -> str:
-        file = await bot.get_file(file_id)
-        return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        try:
+            file = await bot.get_file(file_id)
+            url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+            logger.info(f"📎 Получен URL для file_id {file_id}")
+            return url
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения URL: {e}")
+            return None
     
     # Определяем тип контента и создаем соответствующий результат
-    if template['media_type'] == 'photo' and template['media_id']:
-        # Для фото используем InlineQueryResultPhoto
-        photo_url = await get_file_url(template['media_id'])
+    try:
+        if template['media_type'] == 'photo' and template['media_id']:
+            # Для фото используем InlineQueryResultPhoto
+            photo_url = await get_file_url(template['media_id'])
+            
+            if photo_url:
+                results = [InlineQueryResultPhoto(
+                    id=key,
+                    photo_url=photo_url,
+                    thumbnail_url=photo_url,
+                    caption=template['content'] or None,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                    title=f'📸 {template["title"]}',
+                    description=f'Фото • {date_str}'
+                )]
+                logger.info(f"🖼️ Создан результат для фото")
+            else:
+                # Если не удалось получить URL, показываем текст
+                results = [InlineQueryResultArticle(
+                    id=key,
+                    title=f'📄 {template["title"]} (фото недоступно)',
+                    description=f'Текст • {date_str}',
+                    input_message_content=InputTextMessageContent(
+                        message_text=template['content'] or " ",
+                        parse_mode=ParseMode.MARKDOWN
+                    ),
+                    reply_markup=reply_markup
+                )]
+            
+        elif template['media_type'] == 'video' and template['media_id']:
+            # Для видео используем InlineQueryResultVideo
+            video_url = await get_file_url(template['media_id'])
+            
+            if video_url:
+                # Для превью используем заглушку
+                results = [InlineQueryResultVideo(
+                    id=key,
+                    video_url=video_url,
+                    mime_type="video/mp4",
+                    thumbnail_url="https://via.placeholder.com/320x180.png?text=Video",
+                    caption=template['content'] or None,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                    title=f'🎬 {template["title"]}',
+                    description=f'Видео • {date_str}'
+                )]
+                logger.info(f"🎬 Создан результат для видео")
+            else:
+                results = [InlineQueryResultArticle(
+                    id=key,
+                    title=f'📄 {template["title"]} (видео недоступно)',
+                    description=f'Текст • {date_str}',
+                    input_message_content=InputTextMessageContent(
+                        message_text=template['content'] or " ",
+                        parse_mode=ParseMode.MARKDOWN
+                    ),
+                    reply_markup=reply_markup
+                )]
+            
+        else:
+            # Для текста используем InlineQueryResultArticle
+            results = [InlineQueryResultArticle(
+                id=key,
+                title=f'📄 {template["title"]}',
+                description=f'Текст • {date_str}',
+                input_message_content=InputTextMessageContent(
+                    message_text=template['content'] or " ",
+                    parse_mode=ParseMode.MARKDOWN
+                ),
+                reply_markup=reply_markup
+            )]
+            logger.info(f"📄 Создан результат для текста")
         
-        results = [InlineQueryResultPhoto(
-            id=key,
-            photo_url=photo_url,
-            thumbnail_url=photo_url,
-            caption=template['content'] or None,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup,
-            title=f'📸 {template["title"]}',
-            description=f'Фото • {date_str}'
-        )]
+        await query.answer(results, cache_time=1)
+        logger.info(f"✅ Успешно отправлен результат для ключа '{key}'")
         
-    elif template['media_type'] == 'video' and template['media_id']:
-        # Для видео используем InlineQueryResultVideo
-        video_url = await get_file_url(template['media_id'])
-        
-        # Для превью используем заглушку (Telegram сам подставит кадр)
-        results = [InlineQueryResultVideo(
-            id=key,
-            video_url=video_url,
-            mime_type="video/mp4",
-            thumbnail_url="https://via.placeholder.com/320x180.png?text=Video",
-            caption=template['content'] or None,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup,
-            title=f'🎬 {template["title"]}',
-            description=f'Видео • {date_str}'
-        )]
-        
-    else:
-        # Для текста используем InlineQueryResultArticle
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании inline-результата: {e}", exc_info=True)
+        # В случае ошибки отправляем просто текст
         results = [InlineQueryResultArticle(
             id=key,
-            title=f'📄 {template["title"]}',
-            description=f'Текст • {date_str}',
+            title=f'⚠️ Ошибка загрузки',
+            description=str(e)[:50],
             input_message_content=InputTextMessageContent(
-                message_text=template['content'] or " ",
+                message_text=template['content'] or "Ошибка загрузки медиа",
                 parse_mode=ParseMode.MARKDOWN
             ),
             reply_markup=reply_markup
         )]
-    
-    await query.answer(results, cache_time=1)
+        await query.answer(results, cache_time=1)
 
 # ==================== УДАЛЕНИЕ ПОСТОВ ====================
 
