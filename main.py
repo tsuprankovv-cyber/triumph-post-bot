@@ -11,7 +11,13 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
+from aiogram.types import (
+    InlineQuery, 
+    InlineQueryResultArticle, 
+    InlineQueryResultPhoto,
+    InlineQueryResultVideo,
+    InputTextMessageContent
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.enums import ParseMode
 
@@ -575,7 +581,7 @@ async def finish_post(message: types.Message, state: FSMContext):
         reply_markup=main_keyboard()
     )
 
-# ==================== INLINE РЕЖИМ ====================
+# ==================== INLINE РЕЖИМ С ПОДДЕРЖКОЙ ФОТО И ВИДЕО ====================
 
 @dp.inline_query()
 async def inline_query_handler(query: InlineQuery):
@@ -627,7 +633,7 @@ async def inline_query_handler(query: InlineQuery):
         await query.answer(results, cache_time=1)
         return
     
-    # Создаем клавиатуру для inline-режима
+    # Создаем клавиатуру для кнопок
     reply_markup = None
     if template['buttons']:
         builder = InlineKeyboardBuilder()
@@ -637,22 +643,59 @@ async def inline_query_handler(query: InlineQuery):
         builder.adjust(1)
         reply_markup = builder.as_markup()
     
-    # Создаем контент для публикации
-    input_content = InputTextMessageContent(
-        message_text=template['content'] or " ",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
     created = datetime.fromisoformat(template['created_at'])
     date_str = created.strftime("%d.%m.%Y %H:%M")
     
-    results = [InlineQueryResultArticle(
-        id=key,
-        title=f'📄 {template["title"]}',
-        description=f'Создан: {date_str}',
-        input_message_content=input_content,
-        reply_markup=reply_markup
-    )]
+    # Получаем URL для медиа через Telegram API
+    async def get_file_url(file_id: str) -> str:
+        file = await bot.get_file(file_id)
+        return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+    
+    # Определяем тип контента и создаем соответствующий результат
+    if template['media_type'] == 'photo' and template['media_id']:
+        # Для фото используем InlineQueryResultPhoto
+        photo_url = await get_file_url(template['media_id'])
+        
+        results = [InlineQueryResultPhoto(
+            id=key,
+            photo_url=photo_url,
+            thumbnail_url=photo_url,
+            caption=template['content'] or None,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+            title=f'📸 {template["title"]}',
+            description=f'Фото • {date_str}'
+        )]
+        
+    elif template['media_type'] == 'video' and template['media_id']:
+        # Для видео используем InlineQueryResultVideo
+        video_url = await get_file_url(template['media_id'])
+        
+        # Для превью используем заглушку (Telegram сам подставит кадр)
+        results = [InlineQueryResultVideo(
+            id=key,
+            video_url=video_url,
+            mime_type="video/mp4",
+            thumbnail_url="https://via.placeholder.com/320x180.png?text=Video",
+            caption=template['content'] or None,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+            title=f'🎬 {template["title"]}',
+            description=f'Видео • {date_str}'
+        )]
+        
+    else:
+        # Для текста используем InlineQueryResultArticle
+        results = [InlineQueryResultArticle(
+            id=key,
+            title=f'📄 {template["title"]}',
+            description=f'Текст • {date_str}',
+            input_message_content=InputTextMessageContent(
+                message_text=template['content'] or " ",
+                parse_mode=ParseMode.MARKDOWN
+            ),
+            reply_markup=reply_markup
+        )]
     
     await query.answer(results, cache_time=1)
 
@@ -681,7 +724,7 @@ async def cmd_delete(message: types.Message):
 # ==================== ЗАПУСК ====================
 
 async def main():
-    logger.info("🚀 Бот-генератор запускается...")
+    logger.info("🚀 Бот-генератор с поддержкой фото/видео запускается...")
     await bot.delete_webhook()
     await dp.start_polling(bot)
 
