@@ -43,14 +43,31 @@ init_db()
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ====================
 
+def button_exists(user_id: int, text: str, url: str) -> bool:
+    """Проверяет, существует ли уже такая кнопка (по тексту И ссылке)"""
+    conn = sqlite3.connect('templates.db')
+    c = conn.cursor()
+    c.execute('''SELECT id FROM saved_buttons 
+                 WHERE user_id = ? AND button_text = ? AND button_url = ?''', 
+              (user_id, text, url))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
+
 def save_button(user_id: int, text: str, url: str):
-    """Сохраняет кнопку в базу часто используемых"""
+    """Сохраняет кнопку в базу часто используемых (только если нет такой же)"""
+    if button_exists(user_id, text, url):
+        logger.info(f"⏭️ Кнопка уже существует: {text} - {url}")
+        return False
+    
     conn = sqlite3.connect('templates.db')
     c = conn.cursor()
     c.execute('''INSERT INTO saved_buttons (user_id, button_text, button_url, created_at)
                  VALUES (?, ?, ?, ?)''', (user_id, text, url, datetime.now()))
     conn.commit()
     conn.close()
+    logger.info(f"✅ Новая кнопка сохранена: {text}")
+    return True
 
 def get_saved_buttons(user_id: int) -> list:
     """Возвращает все сохраненные кнопки пользователя"""
@@ -256,15 +273,20 @@ async def process_add_button_url(message: types.Message, state: FSMContext):
     if button_url.startswith('t.me/'):
         button_url = 'https://' + button_url
     
-    # Сохраняем кнопку в базу
-    save_button(message.from_user.id, button_text, button_url)
-    
-    await message.answer(
-        f"✅ **Кнопка сохранена!**\n\n"
-        f"**Текст:** `{button_text}`\n"
-        f"**Ссылка:** `{button_url}`",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    # Сохраняем кнопку в базу (только если новая)
+    if save_button(message.from_user.id, button_text, button_url):
+        await message.answer(
+            f"✅ **Кнопка сохранена!**\n\n"
+            f"**Текст:** `{button_text}`\n"
+            f"**Ссылка:** `{button_url}`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await message.answer(
+            f"⚠️ **Кнопка не добавлена**\n\n"
+            f"Такая кнопка (с таким же текстом и ссылкой) уже существует.",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
     # Показываем обновленный список кнопок
     await cmd_my_buttons(message)
@@ -293,7 +315,8 @@ async def cmd_help(message: types.Message):
         "  - Копировать кнопку (📋)\n"
         "  - Редактировать (✏️)\n"
         "  - Удалять (🗑️)\n"
-        "  - Добавить новую (➕ Новая кнопка)",
+        "  - Добавить новую (➕ Новая кнопка)\n"
+        "  - При создании поста можно выбрать несколько кнопок сразу",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard()
     )
@@ -442,7 +465,7 @@ async def handle_post_content(message: types.Message, state: FSMContext):
     await state.update_data(content_data)
     await state.set_state(PostForm.waiting_for_buttons)
 
-# ==================== ШАГ 2: ДОБАВЛЕНИЕ КНОПОК ====================
+# ==================== ШАГ 2: ДОБАВЛЕНИЕ КНОПОК (С МНОЖЕСТВЕННЫМ ВЫБОРОМ) ====================
 
 @dp.message(PostForm.waiting_for_buttons, F.text == "➕ Добавить кнопки")
 async def ask_for_buttons(message: types.Message, state: FSMContext):
@@ -463,7 +486,7 @@ async def ask_for_buttons(message: types.Message, state: FSMContext):
 
 @dp.message(PostForm.waiting_for_buttons, F.text == "📚 Мои кнопки")
 async def use_saved_buttons(message: types.Message, state: FSMContext):
-    """Показывает сохраненные кнопки для добавления в пост"""
+    """Показывает сохраненные кнопки для множественного выбора и добавления в пост"""
     buttons = get_saved_buttons(message.from_user.id)
     
     if not buttons:
@@ -473,30 +496,68 @@ async def use_saved_buttons(message: types.Message, state: FSMContext):
         )
         return
     
-    # Создаем клавиатуру с кнопками для добавления
+    # Получаем текущее состояние, чтобы отметить уже выбранные кнопки
+    data = await state.get_data()
+    existing_buttons = data.get('buttons', [])
+    selected_buttons = data.get('selected_buttons', [])
+    
+    # Создаем множество уже выбранных текстов (для отметки)
+    selected_texts = set()
+    
+    # Добавляем уже примененные кнопки
+    for row in existing_buttons:
+        for btn in row:
+            selected_texts.add(btn['text'])
+    
+    # Добавляем временно выбранные
+    for btn in selected_buttons:
+        selected_texts.add(btn['text'])
+    
+    # Создаем клавиатуру с кнопками для выбора
     builder = InlineKeyboardBuilder()
-    for btn in buttons[:10]:  # Показываем последние 10
+    
+    for btn in buttons:
+        # Проверяем, выбрана ли уже эта кнопка
+        is_selected = btn['text'] in selected_texts
+        prefix = "✅ " if is_selected else "🔘 "
+        
         builder.button(
-            text=f"{btn['text'][:20]}", 
-            callback_data=f"add_btn_to_post:{btn['id']}"
+            text=f"{prefix}{btn['text'][:30]}", 
+            callback_data=f"select_btn:{btn['id']}"
         )
+    
+    # Кнопки управления
+    builder.row(
+        types.InlineKeyboardButton(
+            text="✅ Применить выбранные", 
+            callback_data="apply_selected_buttons"
+        ),
+        types.InlineKeyboardButton(
+            text="🔄 Сбросить все", 
+            callback_data="clear_selected_buttons"
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="◀️ Назад", 
+            callback_data="back_to_post_creation"
+        )
+    )
+    
     builder.adjust(2)
     
-    # Кнопка возврата
-    builder.row(types.InlineKeyboardButton(
-        text="◀️ Назад", 
-        callback_data="back_to_post_creation"
-    ))
-    
     await message.answer(
-        "**Выбери кнопку для добавления в пост:**",
+        "**📚 Выбери кнопки для добавления в пост:**\n\n"
+        "🔘 — не выбрана\n"
+        "✅ — выбрана\n"
+        "Можно выбрать несколько. После выбора нажми **✅ Применить**",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=builder.as_markup()
     )
 
-@dp.callback_query(lambda c: c.data.startswith('add_btn_to_post:'))
-async def add_saved_button_to_post(callback: types.CallbackQuery, state: FSMContext):
-    """Добавляет сохраненную кнопку в текущий пост и возвращает к добавлению"""
+@dp.callback_query(lambda c: c.data.startswith('select_btn:'))
+async def select_button_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Выбирает или отменяет выбор кнопки для добавления в пост"""
     button_id = int(callback.data.split(':')[1])
     buttons = get_saved_buttons(callback.from_user.id)
     
@@ -505,15 +566,120 @@ async def add_saved_button_to_post(callback: types.CallbackQuery, state: FSMCont
         await callback.answer("❌ Кнопка не найдена")
         return
     
-    # Получаем текущие кнопки из состояния
+    # Получаем текущие выбранные кнопки из состояния
     data = await state.get_data()
     existing_buttons = data.get('buttons', [])
+    selected_buttons = data.get('selected_buttons', [])
     
-    # Добавляем новую кнопку
-    existing_buttons.append([{'text': btn['text'], 'url': btn['url']}])
-    await state.update_data(buttons=existing_buttons)
+    # Проверяем, выбрана ли уже эта кнопка
+    is_selected = False
     
-    # Удаляем сообщение со списком кнопок
+    # Проверяем в уже примененных
+    for row in existing_buttons:
+        for b in row:
+            if b['text'] == btn['text'] and b['url'] == btn['url']:
+                is_selected = True
+                break
+    
+    # Проверяем во временном хранилище
+    if not is_selected:
+        for b in selected_buttons:
+            if b['text'] == btn['text'] and b['url'] == btn['url']:
+                is_selected = True
+                break
+    
+    if is_selected:
+        # Убираем из временного хранилища
+        selected_buttons = [b for b in selected_buttons 
+                           if not (b['text'] == btn['text'] and b['url'] == btn['url'])]
+        await callback.answer("❌ Кнопка убрана из выбранных")
+    else:
+        # Добавляем во временное хранилище
+        selected_buttons.append({'text': btn['text'], 'url': btn['url']})
+        await callback.answer("✅ Кнопка добавлена в выбранные")
+    
+    await state.update_data(selected_buttons=selected_buttons)
+    
+    # Обновляем сообщение со списком кнопок
+    await update_buttons_list(callback.message, state, callback.from_user.id)
+
+async def update_buttons_list(message: types.Message, state: FSMContext, user_id: int):
+    """Обновляет сообщение со списком кнопок, показывая выбранные"""
+    buttons = get_saved_buttons(user_id)
+    data = await state.get_data()
+    existing_buttons = data.get('buttons', [])
+    selected_buttons = data.get('selected_buttons', [])
+    
+    # Создаем множество выбранных текстов
+    selected_texts = set()
+    
+    # Добавляем уже примененные кнопки
+    for row in existing_buttons:
+        for btn in row:
+            selected_texts.add(btn['text'])
+    
+    # Добавляем временно выбранные
+    for btn in selected_buttons:
+        selected_texts.add(btn['text'])
+    
+    # Создаем клавиатуру
+    builder = InlineKeyboardBuilder()
+    
+    for btn in buttons:
+        is_selected = btn['text'] in selected_texts
+        prefix = "✅ " if is_selected else "🔘 "
+        
+        builder.button(
+            text=f"{prefix}{btn['text'][:30]}", 
+            callback_data=f"select_btn:{btn['id']}"
+        )
+    
+    builder.row(
+        types.InlineKeyboardButton(
+            text="✅ Применить выбранные", 
+            callback_data="apply_selected_buttons"
+        ),
+        types.InlineKeyboardButton(
+            text="🔄 Сбросить все", 
+            callback_data="clear_selected_buttons"
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="◀️ Назад", 
+            callback_data="back_to_post_creation"
+        )
+    )
+    
+    builder.adjust(2)
+    
+    await message.edit_text(
+        "**📚 Выбери кнопки для добавления в пост:**\n\n"
+        "🔘 — не выбрана\n"
+        "✅ — выбрана\n"
+        "Можно выбрать несколько. После выбора нажми **✅ Применить**",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data == "apply_selected_buttons")
+async def apply_selected_buttons_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Применяет все выбранные кнопки к посту"""
+    data = await state.get_data()
+    selected_buttons = data.get('selected_buttons', [])
+    existing_buttons = data.get('buttons', [])
+    
+    if not selected_buttons:
+        await callback.answer("❌ Нет выбранных кнопок")
+        return
+    
+    # Добавляем все выбранные кнопки к существующим
+    for btn in selected_buttons:
+        existing_buttons.append([btn])
+    
+    await state.update_data(buttons=existing_buttons, selected_buttons=[])
+    
+    # Удаляем сообщение со списком
     await callback.message.delete()
     
     # Показываем обновленный предпросмотр
@@ -521,12 +687,19 @@ async def add_saved_button_to_post(callback: types.CallbackQuery, state: FSMCont
     
     # Возвращаемся в режим добавления кнопок
     await callback.message.answer(
-        f"✅ Кнопка **{btn['text']}** добавлена!\n"
+        f"✅ Добавлено {len(selected_buttons)} кнопок!\n"
         f"Можешь добавить еще или нажать **✅ Готово**",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=post_creation_keyboard()
     )
     await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "clear_selected_buttons")
+async def clear_selected_buttons_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Сбрасывает все выбранные кнопки"""
+    await state.update_data(selected_buttons=[])
+    await update_buttons_list(callback.message, state, callback.from_user.id)
+    await callback.answer("🔄 Выбор сброшен")
 
 @dp.callback_query(lambda c: c.data == 'back_to_post_creation')
 async def back_to_post_creation(callback: types.CallbackQuery, state: FSMContext):
@@ -557,7 +730,7 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
     
     for line in lines:
         if '|' in line:
-            # Несколько кнопок в одной строке (горизонтально)
+         # Несколько кнопок в одной строке (горизонтально)
             buttons_in_row = line.split('|')
             row = []
             for btn_text in buttons_in_row:
@@ -568,6 +741,7 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
                         if btn_url.startswith('t.me/'):
                             btn_url = 'https://' + btn_url
                         row.append({'text': btn_name.strip(), 'url': btn_url.strip()})
+                        # Сохраняем в базу (только если новая)
                         save_button(message.from_user.id, btn_name.strip(), btn_url.strip())
             if row:
                 all_buttons.append(row)
@@ -580,6 +754,7 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
                     if btn_url.startswith('t.me/'):
                         btn_url = 'https://' + btn_url
                     all_buttons.append([{'text': btn_name.strip(), 'url': btn_url.strip()}])
+                    # Сохраняем в базу (только если новая)
                     save_button(message.from_user.id, btn_name.strip(), btn_url.strip())
     
     if all_buttons:
@@ -659,48 +834,3 @@ async def finish_post(message: types.Message, state: FSMContext):
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
-        for row in buttons:
-            for btn in row:
-                builder.button(text=btn['text'], url=btn['url'])
-        builder.adjust(1)
-        kb = builder.as_markup()
-    
-    if media_type == 'photo' and media_id:
-        await message.answer_photo(
-            photo=media_id, 
-            caption=content_text if content_text else None, 
-            reply_markup=kb, 
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif media_type == 'video' and media_id:
-        await message.answer_video(
-            video=media_id, 
-            caption=content_text if content_text else None, 
-            reply_markup=kb, 
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        if content_text:
-            await message.answer(content_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-        elif buttons:
-            await message.answer(" ", reply_markup=kb)
-    
-    # Возвращаем главное меню
-    await message.answer(
-        "✅ **Пост готов!**\n\n"
-        "Теперь ты можешь переслать его в группу "
-        "с опцией **«Скрыть отправителя»**",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_keyboard()
-    )
-
-# ==================== ЗАПУСК ====================
-
-async def main():
-    logger.info("🚀 Бот-генератор запускается...")
-    await bot.delete_webhook()
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
