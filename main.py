@@ -834,3 +834,48 @@ async def finish_post(message: types.Message, state: FSMContext):
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
+  for row in buttons:
+            for btn in row:
+                builder.button(text=btn['text'], url=btn['url'])
+        builder.adjust(1)
+        kb = builder.as_markup()
+    
+    if media_type == 'photo' and media_id:
+        await message.answer_photo(
+            photo=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif media_type == 'video' and media_id:
+        await message.answer_video(
+            video=media_id, 
+            caption=content_text if content_text else None, 
+            reply_markup=kb, 
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        if content_text:
+            await message.answer(content_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        elif buttons:
+            await message.answer(" ", reply_markup=kb)
+    
+    # Возвращаем главное меню
+    await message.answer(
+        "✅ **Пост готов!**\n\n"
+        "Теперь ты можешь переслать его в группу "
+        "с опцией **«Скрыть отправителя»**",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard()
+    )
+
+# ==================== ЗАПУСК ====================
+
+async def main():
+    logger.info("🚀 Бот-генератор с множественным выбором запускается...")
+    await bot.delete_webhook()
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(main())
