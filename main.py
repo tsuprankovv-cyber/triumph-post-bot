@@ -140,8 +140,7 @@ def post_creation_keyboard():
     builder.button(text="❌ Отмена")
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
-
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+    # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
@@ -325,8 +324,7 @@ async def cmd_help(message: types.Message):
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Действие отменено", reply_markup=main_keyboard())
-
-# ==================== ОБРАБОТЧИКИ ДЛЯ INLINE-КНОПОК (МОИ КНОПКИ) ====================
+    # ==================== ОБРАБОТЧИКИ ДЛЯ INLINE-КНОПОК (МОИ КНОПКИ) ====================
 
 @dp.callback_query(lambda c: c.data.startswith('copy_btn:'))
 async def copy_button_callback(callback: types.CallbackQuery):
@@ -464,8 +462,7 @@ async def handle_post_content(message: types.Message, state: FSMContext):
     
     await state.update_data(content_data)
     await state.set_state(PostForm.waiting_for_buttons)
-
-# ==================== ШАГ 2: ДОБАВЛЕНИЕ КНОПОК (С МНОЖЕСТВЕННЫМ ВЫБОРОМ) ====================
+    # ==================== ШАГ 2: ДОБАВЛЕНИЕ КНОПОК (С МНОЖЕСТВЕННЫМ ВЫБОРОМ) ====================
 
 @dp.message(PostForm.waiting_for_buttons, F.text == "➕ Добавить кнопки")
 async def ask_for_buttons(message: types.Message, state: FSMContext):
@@ -730,7 +727,7 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
     
     for line in lines:
         if '|' in line:
-         # Несколько кнопок в одной строке (горизонтально)
+            # Несколько кнопок в одной строке (горизонтально)
             buttons_in_row = line.split('|')
             row = []
             for btn_text in buttons_in_row:
@@ -834,7 +831,7 @@ async def finish_post(message: types.Message, state: FSMContext):
     kb = None
     if buttons:
         builder = InlineKeyboardBuilder()
-  for row in buttons:
+        for row in buttons:
             for btn in row:
                 builder.button(text=btn['text'], url=btn['url'])
         builder.adjust(1)
